@@ -8,7 +8,7 @@ pragma solidity 0.8.26;
  * @dev Implementa patrones de seguridad y buenas prácticas de Solidity
  */
 contract KipuBank {
-    //Variables de Estado
+    // Variables de Estado
 
     /// @notice Límite máximo de depósitos que puede contener el banco
     /// @dev Establecido en el constructor y no puede ser modificado
@@ -27,7 +27,10 @@ contract KipuBank {
     /// @notice Contador total de retiros realizados en el banco
     uint256 private s_totalWithdrawals;
 
-    //Eventos
+    /// @notice Bloqueo de reentrancy
+    bool private locked;
+
+    // Eventos
 
     /// @notice Emitido cuando un usuario realiza un depósito exitoso
     /// @param user Dirección del usuario que depositó
@@ -41,7 +44,7 @@ contract KipuBank {
     /// @param newBalance Nuevo balance del usuario en la bóveda
     event Withdrawal(address indexed user, uint256 amount, uint256 newBalance);
 
-    //Errores personalizados
+    // Errores Personalizados
 
     /// @notice Error cuando el monto del depósito es cero
     error KipuBank__DepositAmountMustBeGreaterThanZero();
@@ -67,7 +70,10 @@ contract KipuBank {
     /// @notice Error cuando la transferencia de ETH falla
     error KipuBank__TransferFailed();
 
-    //Notificadores
+    /// @notice Error cuando se detecta un intento de reentrancy
+    error KipuBank__ReentrancyDetected();
+
+    // Modificadores
 
     /// @notice Verifica que el monto sea mayor que cero
     /// @param amount Monto a verificar
@@ -78,7 +84,17 @@ contract KipuBank {
         _;
     }
 
-    //Constructor
+    /// @notice Previene ataques de reentrancy
+    modifier nonReentrant() {
+        if (locked) {
+            revert KipuBank__ReentrancyDetected();
+        }
+        locked = true;
+        _;
+        locked = false;
+    }
+
+    // Constructor
 
     /// @notice Inicializa el contrato con el límite máximo del banco
     /// @param bankCap Límite máximo de ETH que puede contener el banco
@@ -86,34 +102,30 @@ contract KipuBank {
         BANK_CAP = bankCap;
     }
 
-    //Funciones Externas
+    // Funciones de Recepción
+
+    /// @notice Permite recibir ETH directamente y lo registra como depósito
+    receive() external payable {
+        _processDeposit();
+    }
+
+    /// @notice Función fallback para recibir ETH
+    fallback() external payable {
+        _processDeposit();
+    }
+
+    // Funciones Externas
 
     /// @notice Permite a los usuarios depositar ETH en su bóveda personal
     /// @dev Aplica checks-effects-interactions. Revierte si excede BANK_CAP
-    function deposit() external payable amountGreaterThanZero(msg.value) {
-        // Checks: Verificar que el depósito no exceda el límite del banco
-        uint256 currentBankBalance = address(this).balance - msg.value;
-        uint256 newBankBalance = currentBankBalance + msg.value;
-        
-        if (newBankBalance > BANK_CAP) {
-            uint256 availableSpace = BANK_CAP - currentBankBalance;
-            revert KipuBank__DepositExceedsBankCap(msg.value, availableSpace);
-        }
-
-        // Effects: Actualizar el estado antes de cualquier interacción externa
-        s_userVaults[msg.sender] += msg.value;
-        s_totalDeposits++;
-        
-        uint256 newUserBalance = s_userVaults[msg.sender];
-
-        // Interactions: Emitir evento (última acción)
-        emit Deposit(msg.sender, msg.value, newUserBalance);
+    function deposit() external payable amountGreaterThanZero(msg.value) nonReentrant {
+        _processDeposit();
     }
 
     /// @notice Permite a los usuarios retirar ETH de su bóveda personal
     /// @param amount Cantidad de ETH a retirar
     /// @dev Aplica checks-effects-interactions y validaciones de seguridad
-    function withdraw(uint256 amount) external amountGreaterThanZero(amount) {
+    function withdraw(uint256 amount) external amountGreaterThanZero(amount) nonReentrant {
         // Checks: Validar límite de retiro
         if (amount > WITHDRAWAL_LIMIT) {
             revert KipuBank__WithdrawalExceedsLimit(amount, WITHDRAWAL_LIMIT);
@@ -173,7 +185,29 @@ contract KipuBank {
         return BANK_CAP - currentBalance;
     }
 
-    //Funciones privadas
+    // Funciones Privadas
+
+    /// @notice Procesa un depósito de ETH
+    /// @dev Función interna reutilizable para deposit(), receive() y fallback()
+    function _processDeposit() private {
+        // Checks: Verificar que el depósito no exceda el límite del banco
+        uint256 currentBankBalance = address(this).balance - msg.value;
+        uint256 newBankBalance = currentBankBalance + msg.value;
+        
+        if (newBankBalance > BANK_CAP) {
+            uint256 availableSpace = BANK_CAP - currentBankBalance;
+            revert KipuBank__DepositExceedsBankCap(msg.value, availableSpace);
+        }
+
+        // Effects: Actualizar el estado
+        s_userVaults[msg.sender] += msg.value;
+        s_totalDeposits++;
+        
+        uint256 newUserBalance = s_userVaults[msg.sender];
+
+        // Interactions: Emitir evento
+        emit Deposit(msg.sender, msg.value, newUserBalance);
+    }
 
     /// @notice Transfiere ETH de forma segura usando call
     /// @param to Dirección destino
@@ -184,3 +218,6 @@ contract KipuBank {
         if (!success) {
             revert KipuBank__TransferFailed();
         }
+    }
+}
+
